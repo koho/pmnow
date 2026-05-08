@@ -128,16 +128,17 @@ async fn main() -> Result<()> {
                 )
                 .is_ok()
             {
-                PM25_H.store((((frame.pm25_env + last_pm25) * delta_t) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
-                PM100_H.store((((frame.pm100_env + last_pm100) * delta_t) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
+                PM25_H.store(((frame.pm25_env + last_pm25) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
+                PM100_H.store(((frame.pm100_env + last_pm100) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
                 pm25_duration = delta_t;
                 pm100_duration = delta_t;
             } else {
                 if PM25_H
                     .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
+                        let t_new = (pm25_duration + delta_t) as f64;
                         let t = pm25_duration as f64;
-                        let avg = (t / (t + delta_t)) * f64::from_bits(v)
-                            + ((frame.pm25_env + last_pm25) * delta_t) as f64 / 2.0 / (t + delta_t);
+                        let avg = (t / t_new) * f64::from_bits(v)
+                            + ((frame.pm25_env + last_pm25) as u64 * delta_t) as f64 / 2.0 / t_new;
                         Some(avg.to_bits())
                     })
                     .is_ok()
@@ -146,9 +147,10 @@ async fn main() -> Result<()> {
                 }
                 if PM100_H
                     .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
+                        let t_new = (pm100_duration + delta_t) as f64;
                         let t = pm100_duration as f64;
-                        let avg = (t / (t + delta_t)) * f64::from_bits(v)
-                            + ((frame.pm100_env + last_pm100) * delta_t) as f64 / 2.0 / (t + delta_t);
+                        let avg = (t / t_new) * f64::from_bits(v)
+                            + ((frame.pm100_env + last_pm100) as u64 * delta_t) as f64 / 2.0 / t_new;
                         Some(avg.to_bits())
                     })
                     .is_ok()
