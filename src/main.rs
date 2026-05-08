@@ -102,8 +102,11 @@ async fn main() -> Result<()> {
     if name.len() > 0 {
         buf[1..name.len() + 1].copy_from_slice(name);
     }
-    let mut pm25_count = 0u64;
-    let mut pm100_count = 0u64;
+    let mut pm25_duration = 0u64;
+    let mut pm100_duration = 0u64;
+    let mut last_pm25 = 0u16;
+    let mut last_pm100 = 0u16;
+    let mut last_received = 0u64;
     let offset = name.len() + 1;
     loop {
         let frame = sensor.get_frame().await?;
@@ -111,49 +114,56 @@ async fn main() -> Result<()> {
         print!("PM: {:?} {:?}", frame.pm25_env, frame.pm100_env);
         let _ = io::stdout().flush();
 
-        if RESET_H
-            .compare_exchange(
-                true,
-                false,
-                atomic::Ordering::Acquire,
-                atomic::Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            PM25_H.store(frame.pm25_env as u64, atomic::Ordering::Relaxed);
-            PM100_H.store(frame.pm100_env as u64, atomic::Ordering::Relaxed);
-            pm25_count = 1;
-            pm100_count = 1;
-        } else {
-            if PM25_H
-                .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
-                    let count = pm25_count as f64;
-                    let avg = (count / (count + 1.0)) * f64::from_bits(v)
-                        + frame.pm25_env as f64 / (count + 1.0);
-                    Some(avg.to_bits())
-                })
-                .is_ok()
-            {
-                pm25_count += 1;
-            }
-            if PM100_H
-                .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
-                    let count = pm100_count as f64;
-                    let avg = (count / (count + 1.0)) * f64::from_bits(v)
-                        + frame.pm100_env as f64 / (count + 1.0);
-                    Some(avg.to_bits())
-                })
-                .is_ok()
-            {
-                pm100_count += 1;
-            }
-        }
-
-        buf[offset..offset + 2].copy_from_slice(&frame.pm25_env.to_be_bytes());
-        buf[offset + 2..offset + 4].copy_from_slice(&frame.pm100_env.to_be_bytes());
         let ts = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_millis() as u64;
+        let delta_t = ts - last_received;
+        if last_received > 0 {
+            if RESET_H
+                .compare_exchange(
+                    true,
+                    false,
+                    atomic::Ordering::Acquire,
+                    atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                PM25_H.store((((frame.pm25_env + last_pm25) * delta_t) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
+                PM100_H.store((((frame.pm100_env + last_pm100) * delta_t) as f64 / 2.0).to_bits(), atomic::Ordering::Relaxed);
+                pm25_duration = delta_t;
+                pm100_duration = delta_t;
+            } else {
+                if PM25_H
+                    .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
+                        let t = pm25_duration as f64;
+                        let avg = (t / (t + delta_t)) * f64::from_bits(v)
+                            + ((frame.pm25_env + last_pm25) * delta_t) as f64 / 2.0 / (t + delta_t);
+                        Some(avg.to_bits())
+                    })
+                    .is_ok()
+                {
+                    pm25_duration += delta_t;
+                }
+                if PM100_H
+                    .fetch_update(atomic::Ordering::SeqCst, atomic::Ordering::SeqCst, |v| {
+                        let t = pm100_duration as f64;
+                        let avg = (t / (t + delta_t)) * f64::from_bits(v)
+                            + ((frame.pm100_env + last_pm100) * delta_t) as f64 / 2.0 / (t + delta_t);
+                        Some(avg.to_bits())
+                    })
+                    .is_ok()
+                {
+                    pm100_duration += delta_t;
+                }
+            }
+        }
+        
+        last_pm25 = frame.pm25_env;
+        last_pm100 = frame.pm100_env;
+        last_received = ts;
+
+        buf[offset..offset + 2].copy_from_slice(&frame.pm25_env.to_be_bytes());
+        buf[offset + 2..offset + 4].copy_from_slice(&frame.pm100_env.to_be_bytes());
         buf[offset + 4..offset + 12].copy_from_slice(&ts.to_be_bytes());
         let sig = key_pair.sign(&buf[..offset + 12]);
         let buf_len = offset + 12 + sig.as_ref().len();
