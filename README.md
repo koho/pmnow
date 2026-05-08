@@ -16,3 +16,7 @@ PM: 17 (PM2.5) 19 (PM10)
 ```
 
 You can view historical data at https://pmnow.netlify.app/sensor/{ID}.
+
+## Screenshot
+
+<img width="420" height="335" alt="ScreenShot_2026-05-08_171024_705" src="https://github.com/user-attachments/assets/95074461-ac59-4c6f-8ef9-0cc159b0de1f" />
